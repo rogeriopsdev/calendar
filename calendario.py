@@ -201,16 +201,24 @@ def carregar_semestres_por_calendario(id_calendario: int):
 
 def carregar_eventos():
     df = pd.read_sql_query("SELECT * FROM eventos ORDER BY date(data)", conn)
+
     if df.empty:
         return df
 
+    # Garante que as colunas existem
     if "fim" not in df.columns:
         df["fim"] = df["data"]
+
+    # Converte datas mesmo se vierem como texto
+    df["data"] = pd.to_datetime(df["data"], errors="coerce")
+    df["fim"] = pd.to_datetime(df["fim"], errors="coerce")
+
+    # Se houver datas inválidas -> substitui pela própria data
+    df["data"] = df["data"].fillna(pd.to_datetime("today"))
     df["fim"] = df["fim"].fillna(df["data"])
 
-    df["data"] = pd.to_datetime(df["data"])
-    df["fim"] = pd.to_datetime(df["fim"])
     return df
+
 
 
 def inserir_evento(data_inicio, tipo, titulo, descricao, data_fim, id_calendario):
