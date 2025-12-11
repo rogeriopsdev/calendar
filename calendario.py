@@ -153,6 +153,43 @@ def criar_usuario(username, senha, perfil):
     )
     conn.commit()
 
+def verificar_e_corrigir_schema(conn):
+    cursor = conn.cursor()
+
+    # === Verificar tabela calendarios ===
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS calendarios (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome TEXT NOT NULL,
+            descricao TEXT
+        );
+    """)
+
+    # === Verificar tabela semestres ===
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS semestres (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id_calendario INTEGER,
+            nome_semestre TEXT NOT NULL,
+            data_inicio TEXT NOT NULL,
+            data_fim TEXT NOT NULL
+        );
+    """)
+
+    conn = get_connection()
+    verificar_e_corrigir_schema(conn)
+
+    # Obter lista de colunas existentes
+    cursor.execute("PRAGMA table_info(semestres)")
+    colunas = [c[1] for c in cursor.fetchall()]
+
+    # Criar coluna faltante
+    if "id_calendario" not in colunas:
+        cursor.execute("ALTER TABLE semestres ADD COLUMN id_calendario INTEGER;")
+
+    conn.commit()
+
+
 # ======================================
 # FUNÇÕES DE CALENDÁRIOS
 # ======================================
