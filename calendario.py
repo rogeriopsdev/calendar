@@ -62,6 +62,7 @@ def get_connection():
     """)
     conn.commit()
 
+
     # Garantir coluna 'fim'
     try:
         conn.execute("ALTER TABLE eventos ADD COLUMN fim TEXT;")
