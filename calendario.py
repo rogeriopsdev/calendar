@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
-from streamlit_calendar import calendar
+#from streamlit_calendar import calendar
 from fpdf import FPDF
 from datetime import datetime, date, timedelta
 import hashlib
