@@ -22,9 +22,8 @@ st.markdown(
 )
 
 # ======================================
-# CORES E PRIORIDADES
+# CORES / PRIORIDADES
 # ======================================
-
 UI_CORES = {
     "aula": "#008542",      # verde IFTO
     "evento": "#F2AF00",    # amarelo
@@ -41,109 +40,104 @@ PDF_CORES = {
 
 PRIORIDADE = ["feriado", "reunião", "evento", "aula"]
 
+
 # ======================================
 # BANCO DE DADOS (SQLite)
 # ======================================
 @st.cache_resource
 def get_connection():
     conn = sqlite3.connect("calendario.db", check_same_thread=False)
+    cur = conn.cursor()
 
-    # Tabela de calendários
-    conn.execute("""
+    # ---- Tabela de calendários ----
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS calendarios (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             nome_calendario TEXT UNIQUE NOT NULL,
             descricao TEXT
-        )
+        );
     """)
-    conn.commit()
+    # Garantir coluna nivel_ensino (migração)
+    cur.execute("PRAGMA table_info(calendarios)")
+    cols_cal = [c[1] for c in cur.fetchall()]
+    if "nivel_ensino" not in cols_cal:
+        cur.execute("ALTER TABLE calendarios ADD COLUMN nivel_ensino TEXT;")
 
-    # Calendário padrão
-    cur_cal = conn.execute("SELECT * FROM calendarios")
-    if cur_cal.fetchone() is None:
-        conn.execute(
-            "INSERT INTO calendarios (nome_calendario, descricao) VALUES (?, ?)",
-            ("Calendário Geral", "Calendário padrão inicial")
+    # Calendário padrão, se não houver nenhum
+    if cur.execute("SELECT COUNT(*) FROM calendarios").fetchone()[0] == 0:
+        cur.execute(
+            "INSERT INTO calendarios (nome_calendario, descricao, nivel_ensino) VALUES (?, ?, ?)",
+            ("Calendário Geral", "Calendário padrão inicial", "Geral")
         )
-        conn.commit()
 
-    # Tabela de eventos
-    conn.execute("""
+    # ---- Tabela de usuários ----
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS usuarios (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            senha TEXT NOT NULL,
+            perfil TEXT NOT NULL
+        );
+    """)
+
+    # Usuário admin padrão
+    if cur.execute("SELECT COUNT(*) FROM usuarios WHERE username='admin'").fetchone()[0] == 0:
+        admin_hash = hashlib.sha256("admin123".encode()).hexdigest()
+        cur.execute(
+            "INSERT INTO usuarios (username, senha, perfil) VALUES (?, ?, ?)",
+            ("admin", admin_hash, "admin")
+        )
+
+    # ---- Tabela de eventos (com migração) ----
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS eventos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             data TEXT NOT NULL,
             tipo TEXT NOT NULL,
             titulo TEXT NOT NULL,
             descricao TEXT
-        )
+        );
     """)
-    conn.commit()
+    # Garantir coluna 'fim'
+    cur.execute("PRAGMA table_info(eventos)")
+    cols_evt = [c[1] for c in cur.fetchall()]
+    if "fim" not in cols_evt:
+        cur.execute("ALTER TABLE eventos ADD COLUMN fim TEXT;")
+    if "id_calendario" not in cols_evt:
+        cur.execute("ALTER TABLE eventos ADD COLUMN id_calendario INTEGER;")
 
-    # Coluna fim
-    try:
-        conn.execute("ALTER TABLE eventos ADD COLUMN fim TEXT;")
-        conn.commit()
-    except Exception:
-        pass
-
-    # Coluna id_calendario
-    try:
-        conn.execute("ALTER TABLE eventos ADD COLUMN id_calendario INTEGER;")
-        conn.commit()
-    except Exception:
-        pass
-
-    # Tabela de usuários
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS usuarios (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            senha TEXT NOT NULL,
-            perfil TEXT NOT NULL
-        )
-    """)
-    conn.commit()
-
-    # Usuário admin padrão
-    cursor = conn.execute("SELECT * FROM usuarios WHERE username = 'admin'")
-    if cursor.fetchone() is None:
-        senha_hash = hashlib.sha256("admin123".encode()).hexdigest()
-        conn.execute(
-            "INSERT INTO usuarios (username, senha, perfil) VALUES (?, ?, ?)",
-            ("admin", senha_hash, "admin")
-        )
-        conn.commit()
-
-    # Tabela de semestres (ligados ao calendário)
-    conn.execute("""
+    # ---- Tabela de semestres ----
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS semestres (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             id_calendario INTEGER NOT NULL,
             nome_semestre TEXT NOT NULL,
             data_inicio TEXT NOT NULL,
             data_fim TEXT NOT NULL,
-            UNIQUE (id_calendario, nome_semestre)
-        )
+            UNIQUE(id_calendario, nome_semestre)
+        );
     """)
-    conn.commit()
 
+    conn.commit()
     return conn
 
+
 conn = get_connection()
+
 
 # ======================================
 # FUNÇÕES DE USUÁRIO / LOGIN
 # ======================================
 def autenticar_usuario(username, senha):
     senha_hash = hashlib.sha256(senha.encode()).hexdigest()
-    cursor = conn.execute(
-        "SELECT username, perfil FROM usuarios WHERE username = ? AND senha = ?",
+    row = conn.execute(
+        "SELECT username, perfil FROM usuarios WHERE username=? AND senha=?",
         (username, senha_hash)
-    )
-    row = cursor.fetchone()
+    ).fetchone()
     if row:
         return {"username": row[0], "perfil": row[1]}
     return None
+
 
 def criar_usuario(username, senha, perfil):
     senha_hash = hashlib.sha256(senha.encode()).hexdigest()
@@ -153,121 +147,6 @@ def criar_usuario(username, senha, perfil):
     )
     conn.commit()
 
-def verificar_e_corrigir_schema(conn):
-    cursor = conn.cursor()
-
-    # === Verificar tabela calendarios ===
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS calendarios (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nome TEXT NOT NULL,
-            descricao TEXT
-        );
-    """)
-
-    # === Verificar tabela semestres ===
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS semestres (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            id_calendario INTEGER,
-            nome_semestre TEXT NOT NULL,
-            data_inicio TEXT NOT NULL,
-            data_fim TEXT NOT NULL
-        );
-    """)
-
-    conn = get_connection()
-    verificar_e_corrigir_schema(conn)
-
-    # Obter lista de colunas existentes
-    cursor.execute("PRAGMA table_info(semestres)")
-    colunas = [c[1] for c in cursor.fetchall()]
-
-    # Criar coluna faltante
-    if "id_calendario" not in colunas:
-        cursor.execute("ALTER TABLE semestres ADD COLUMN id_calendario INTEGER;")
-
-    conn.commit()
-
-
-# ======================================
-# FUNÇÕES DE CALENDÁRIOS
-# ======================================
-def carregar_calendarios():
-    return pd.read_sql_query(
-        "SELECT * FROM calendarios ORDER BY nome_calendario",
-        conn
-    )
-
-def inserir_calendario(nome, descricao):
-    conn.execute(
-        "INSERT INTO calendarios (nome_calendario, descricao) VALUES (?, ?)",
-        (nome, descricao)
-    )
-    conn.commit()
-
-def atualizar_calendario(id_cal, nome, descricao):
-    conn.execute(
-        "UPDATE calendarios SET nome_calendario = ?, descricao = ? WHERE id = ?",
-        (nome, descricao, id_cal)
-    )
-    conn.commit()
-
-def excluir_calendario(id_cal):
-    # Apagar eventos e semestres ligados ao calendário
-    conn.execute("DELETE FROM eventos WHERE id_calendario = ?", (id_cal,))
-    conn.execute("DELETE FROM semestres WHERE id_calendario = ?", (id_cal,))
-    conn.execute("DELETE FROM calendarios WHERE id = ?", (id_cal,))
-    conn.commit()
-
-# ======================================
-# FUNÇÕES PARA SEMESTRES ACADÊMICOS
-# ======================================
-def carregar_semestres_por_calendario(id_calendario: int):
-    return pd.read_sql_query(
-        "SELECT * FROM semestres WHERE id_calendario = ? ORDER BY data_inicio",
-        conn,
-        params=(id_calendario,)
-    )
-
-# ======================================
-# FUNÇÕES DE EVENTOS
-# ======================================
-def carregar_eventos():
-    df = pd.read_sql_query("SELECT * FROM eventos ORDER BY date(data)", conn)
-    if df.empty:
-        return df
-
-    if "fim" not in df.columns:
-        df["fim"] = df["data"]
-    df["fim"] = df["fim"].fillna(df["data"])
-
-    df["data"] = pd.to_datetime(df["data"])
-    df["fim"] = pd.to_datetime(df["fim"])
-    return df
-
-def inserir_evento(data_inicio, tipo, titulo, descricao, data_fim, id_calendario):
-    if data_fim is None:
-        data_fim = data_inicio
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO eventos (data, tipo, titulo, descricao, fim, id_calendario) VALUES (?, ?, ?, ?, ?, ?)",
-        (str(data_inicio), tipo, titulo, descricao, str(data_fim), id_calendario)
-    )
-    conn.commit()
-
-def atualizar_evento(id_evento, data_inicio, tipo, titulo, descricao, data_fim):
-    cur = conn.cursor()
-    cur.execute(
-        "UPDATE eventos SET data = ?, tipo = ?, titulo = ?, descricao = ?, fim = ? WHERE id = ?",
-        (str(data_inicio), tipo, titulo, descricao, str(data_fim), id_evento)
-    )
-    conn.commit()
-
-def excluir_evento(id_evento):
-    cur = conn.cursor()
-    cur.execute("DELETE FROM eventos WHERE id = ?", (id_evento,))
-    conn.commit()
 
 # ======================================
 # CONTROLE DE SESSÃO / LOGIN
@@ -304,6 +183,82 @@ if st.sidebar.button("Sair"):
     st.session_state.perfil = ""
     st.rerun()
 
+
+# ======================================
+# FUNÇÕES BASE DE BANCO
+# ======================================
+def carregar_calendarios():
+    return pd.read_sql_query("SELECT * FROM calendarios ORDER BY nome_calendario", conn)
+
+
+def carregar_semestres_por_calendario(id_calendario: int):
+    return pd.read_sql_query(
+        "SELECT * FROM semestres WHERE id_calendario = ? ORDER BY date(data_inicio)",
+        conn,
+        params=(id_calendario,)
+    )
+
+
+def carregar_eventos():
+    df = pd.read_sql_query("SELECT * FROM eventos ORDER BY date(data)", conn)
+    if df.empty:
+        return df
+
+    if "fim" not in df.columns:
+        df["fim"] = df["data"]
+    df["fim"] = df["fim"].fillna(df["data"])
+
+    df["data"] = pd.to_datetime(df["data"])
+    df["fim"] = pd.to_datetime(df["fim"])
+    return df
+
+
+def inserir_evento(data_inicio, tipo, titulo, descricao, data_fim, id_calendario):
+    if data_fim is None:
+        data_fim = data_inicio
+    conn.execute(
+        "INSERT INTO eventos (data, tipo, titulo, descricao, fim, id_calendario) VALUES (?, ?, ?, ?, ?, ?)",
+        (str(data_inicio), tipo, titulo, descricao, str(data_fim), id_calendario)
+    )
+    conn.commit()
+
+
+def atualizar_evento(id_evento, data_inicio, tipo, titulo, descricao, data_fim):
+    conn.execute(
+        "UPDATE eventos SET data = ?, tipo = ?, titulo = ?, descricao = ?, fim = ? WHERE id = ?",
+        (str(data_inicio), tipo, titulo, descricao, str(data_fim), id_evento)
+    )
+    conn.commit()
+
+
+def excluir_evento(id_evento):
+    conn.execute("DELETE FROM eventos WHERE id = ?", (id_evento,))
+    conn.commit()
+
+
+def inserir_calendario(nome, descricao, nivel_ensino):
+    conn.execute(
+        "INSERT INTO calendarios (nome_calendario, descricao, nivel_ensino) VALUES (?, ?, ?)",
+        (nome, descricao, nivel_ensino)
+    )
+    conn.commit()
+
+
+def atualizar_calendario(id_cal, nome, descricao, nivel_ensino):
+    conn.execute(
+        "UPDATE calendarios SET nome_calendario = ?, descricao = ?, nivel_ensino = ? WHERE id = ?",
+        (nome, descricao, nivel_ensino, id_cal)
+    )
+    conn.commit()
+
+
+def excluir_calendario(id_cal):
+    conn.execute("DELETE FROM eventos WHERE id_calendario = ?", (id_cal,))
+    conn.execute("DELETE FROM semestres WHERE id_calendario = ?", (id_cal,))
+    conn.execute("DELETE FROM calendarios WHERE id = ?", (id_cal,))
+    conn.commit()
+
+
 # ======================================
 # GERENCIAMENTO DE USUÁRIOS E CALENDÁRIOS (ADMIN)
 # ======================================
@@ -328,17 +283,22 @@ if st.session_state.perfil == "admin":
                     st.sidebar.error("Usuário já existe.")
 
     # ---- CALENDÁRIOS ----
-    st.sidebar.markdown("### 🗂 Calendários")
+    st.sidebar.markdown("### 🗂 Calendários por nível de ensino")
 
     with st.sidebar.expander("➕ Criar calendário"):
         nome_cal = st.text_input("Nome do calendário (ex: Graduação 2026)", key="cal_nome")
         desc_cal = st.text_area("Descrição", key="cal_desc")
+        nivel_cal = st.selectbox(
+            "Nível de ensino",
+            ["Graduação", "Pós-graduação", "Técnico", "FIC", "EJA", "Geral", "Outro"],
+            key="cal_nivel"
+        )
         if st.button("Salvar calendário", key="btn_add_cal"):
             if nome_cal.strip() == "":
                 st.sidebar.error("Informe um nome para o calendário.")
             else:
                 try:
-                    inserir_calendario(nome_cal, desc_cal)
+                    inserir_calendario(nome_cal, desc_cal, nivel_cal)
                     st.sidebar.success("Calendário criado!")
                     st.rerun()
                 except sqlite3.IntegrityError:
@@ -349,12 +309,16 @@ if st.session_state.perfil == "admin":
         if df_calendarios.empty:
             st.sidebar.info("Nenhum calendário cadastrado.")
         else:
-            sel_cal_nome = st.selectbox(
+            df_calendarios["label"] = df_calendarios.apply(
+                lambda r: f"[{r['nivel_ensino'] or 'Geral'}] {r['nome_calendario']}",
+                axis=1
+            )
+            sel_label = st.selectbox(
                 "Escolha o calendário",
-                df_calendarios["nome_calendario"].tolist(),
+                df_calendarios["label"].tolist(),
                 key="cal_edit_sel"
             )
-            row_cal = df_calendarios[df_calendarios["nome_calendario"] == sel_cal_nome].iloc[0]
+            row_cal = df_calendarios[df_calendarios["label"] == sel_label].iloc[0]
             cal_id_sel = int(row_cal["id"])
 
             novo_nome_cal = st.text_input(
@@ -367,9 +331,16 @@ if st.session_state.perfil == "admin":
                 row_cal["descricao"] or "",
                 key="cal_edit_desc"
             )
+            novo_nivel_cal = st.selectbox(
+                "Nível de ensino",
+                ["Graduação", "Pós-graduação", "Técnico", "FIC", "EJA", "Geral", "Outro"],
+                index=["Graduação", "Pós-graduação", "Técnico", "FIC", "EJA", "Geral", "Outro"]
+                .index(row_cal["nivel_ensino"] or "Geral"),
+                key="cal_edit_nivel"
+            )
 
             if st.button("Salvar alterações", key="btn_salvar_cal"):
-                atualizar_calendario(cal_id_sel, novo_nome_cal, nova_desc_cal)
+                atualizar_calendario(cal_id_sel, novo_nome_cal, nova_desc_cal, novo_nivel_cal)
                 st.sidebar.success("Calendário atualizado!")
                 st.rerun()
 
@@ -381,8 +352,9 @@ else:
     st.sidebar.markdown("### 🗂 Calendários")
     st.sidebar.info("Apenas administradores podem gerenciar calendários.")
 
+
 # ======================================
-# SELEÇÃO DE CALENDÁRIO E SEMESTRE (VISUALIZAÇÃO)
+# SELEÇÃO DE CALENDÁRIO E SEMESTRE
 # ======================================
 st.markdown("## 🗂 Seleção de Calendário e Semestre")
 
@@ -392,18 +364,24 @@ if df_calendarios.empty:
     st.error("Nenhum calendário cadastrado. Crie pelo menos um na barra lateral (admin).")
     st.stop()
 
-# Selecionar calendário para visualização
-nome_cal_visual = st.selectbox(
-    "Selecione o calendário",
-    df_calendarios["nome_calendario"].tolist()
+df_calendarios["label"] = df_calendarios.apply(
+    lambda r: f"[{r['nivel_ensino'] or 'Geral'}] {r['nome_calendario']}",
+    axis=1
 )
 
-row_cal_visual = df_calendarios[df_calendarios["nome_calendario"] == nome_cal_visual].iloc[0]
+nome_cal_visual = st.selectbox(
+    "Selecione o calendário",
+    df_calendarios["label"].tolist()
+)
+
+row_cal_visual = df_calendarios[df_calendarios["label"] == nome_cal_visual].iloc[0]
 id_cal_visual = int(row_cal_visual["id"])
 
-st.caption(row_cal_visual["descricao"] or "")
+st.info(
+    f"🎓 **Nível de ensino:** {row_cal_visual['nivel_ensino'] or 'Geral'}\n\n"
+    f"📝 {row_cal_visual['descricao'] or 'Sem descrição cadastrada.'}"
+)
 
-# Carregar semestres desse calendário
 df_semestres_cal = carregar_semestres_por_calendario(id_cal_visual)
 
 inicio_sem = None
@@ -422,10 +400,11 @@ else:
     fim_sem = pd.to_datetime(dados_sem["data_fim"]).date()
 
     st.info(
-        f"📘 Período do semestre **{semestre_atual}** no calendário **{nome_cal_visual}**: "
+        f"📘 Período do semestre **{semestre_atual}**: "
         f"{inicio_sem.strftime('%d/%m/%Y')} a {fim_sem.strftime('%d/%m/%Y')}"
     )
     st.caption("Dashboard, calendário e PDF serão filtrados por este calendário e semestre.")
+
 
 # ======================================
 # GERENCIAMENTO DE SEMESTRES (ADMIN – POR CALENDÁRIO)
@@ -449,7 +428,8 @@ if st.session_state.perfil == "admin":
             else:
                 try:
                     conn.execute(
-                        "INSERT INTO semestres (id_calendario, nome_semestre, data_inicio, data_fim) VALUES (?, ?, ?, ?)",
+                        "INSERT INTO semestres (id_calendario, nome_semestre, data_inicio, data_fim) "
+                        "VALUES (?, ?, ?, ?)",
                         (id_cal_visual, novo_nome_sem, novo_ini.isoformat(), novo_fim.isoformat())
                     )
                     conn.commit()
@@ -503,6 +483,7 @@ else:
     st.sidebar.markdown("### 📚 Semestres")
     st.sidebar.info("Apenas administradores podem gerenciar semestres.")
 
+
 # ======================================
 # SIDEBAR – CRUD EVENTOS (somente admin/editor)
 # ======================================
@@ -520,10 +501,10 @@ if st.session_state.perfil in ["admin", "editor"]:
     # ---------- ADICIONAR ----------
     if operacao == "Adicionar":
         st.sidebar.markdown("### ➕ Adicionar evento (com período)")
-        st.sidebar.caption(f"Calendário ativo: {nome_cal_visual}")
+        st.sidebar.caption(f"Calendário ativo: {row_cal_visual['nome_calendario']}")
 
-        data_inicio = st.sidebar.date_input("Data de início", value=date.today())
-        data_fim = st.sidebar.date_input("Data de fim", value=date.today())
+        data_inicio = st.sidebar.date_input("Data de início", value=inicio_sem or date.today())
+        data_fim = st.sidebar.date_input("Data de fim", value=inicio_sem or date.today())
         tipo_new = st.sidebar.selectbox(
             "Tipo do evento",
             ["aula", "evento", "feriado", "reunião"]
@@ -609,6 +590,7 @@ if st.session_state.perfil in ["admin", "editor"]:
 else:
     st.sidebar.warning("Você possui permissão apenas para visualizar o calendário e o dashboard.")
 
+
 # ======================================
 # DASHBOARD (FILTRADO POR CALENDÁRIO + SEMESTRE)
 # ======================================
@@ -648,6 +630,7 @@ else:
     df_show["fim"] = df_show["fim"].dt.strftime("%d/%m/%Y")
     st.dataframe(df_show, use_container_width=True)
 
+
 # ======================================
 # EVENTOS PARA O CALENDÁRIO (FILTRADO)
 # ======================================
@@ -679,8 +662,9 @@ if not df_eventos_cal.empty:
 else:
     ano_base = date.today().year
 
+
 # ======================================
-# CALENDÁRIO ANUAL – 12 MESES
+# CALENDÁRIO ANUAL – 12 MESES (CLICÁVEL)
 # ======================================
 st.markdown("## 🗓️ Visualização em calendário – 12 meses")
 
@@ -826,14 +810,15 @@ for linha in range(0, 12, 3):
                         st.success("Evento cadastrado!")
                         st.rerun()
 
+
 # ======================================
 # EXPORTAÇÃO PARA PDF – POR CALENDÁRIO + SEMESTRE
 # ======================================
 st.markdown("## 📄 Exportar calendário para PDF")
 
 def gerar_pdf(df, titulo_extra=None):
+    # Determinar ano base
     if df.empty:
-        # Ano base padrão
         ano_base = date.today().year
     else:
         ano_base = int(df["data"].dt.year.mode()[0])
@@ -842,6 +827,8 @@ def gerar_pdf(df, titulo_extra=None):
 
     pdf = FPDF(orientation="L", format="A4")
     pdf.set_auto_page_break(auto=True, margin=10)
+
+    # Fonte com suporte a UTF-8 (precisa do arquivo DejaVuSans.ttf na pasta)
     pdf.add_font("DejaVu", "", "DejaVuSans.ttf", uni=True)
 
     nomes_meses = [
@@ -858,7 +845,7 @@ def gerar_pdf(df, titulo_extra=None):
         (10, 11, 12)
     ]
 
-    # Eventos por dia
+    # Eventos por dia (incluindo períodos)
     eventos_por_dia = {}
     for _, row in df.iterrows():
         inicio = row["data"].date()
@@ -973,6 +960,7 @@ def gerar_pdf(df, titulo_extra=None):
     pdf.output(caminho)
     return caminho
 
+
 # Dados filtrados pra exportação
 df_export = carregar_eventos()
 df_export = df_export[df_export["id_calendario"] == id_cal_visual]
@@ -990,12 +978,12 @@ if df_export.empty:
     )
 
 if st.button("📄 Gerar PDF do calendário do semestre"):
-    titulo_extra = f"{nome_cal_visual} – {semestre_atual}" if semestre_atual else nome_cal_visual
+    titulo_extra = f"{row_cal_visual['nome_calendario']} – {semestre_atual}" if semestre_atual else row_cal_visual['nome_calendario']
     caminho = gerar_pdf(df_export, titulo_extra=titulo_extra)
     with open(caminho, "rb") as f:
         st.download_button(
             label="⬇️ Baixar arquivo PDF",
             data=f,
-            file_name=f"calendario_IFTO_{nome_cal_visual}_{semestre_atual or 'ano'}.pdf".replace(" ", "_"),
+            file_name=f"calendario_IFTO_{row_cal_visual['nome_calendario']}_{semestre_atual or 'ano'}.pdf".replace(" ", "_"),
             mime="application/pdf"
         )
