@@ -25,7 +25,6 @@ st.markdown(
 # CORES E PRIORIDADES
 # ======================================
 
-# Cores para exibição no Streamlit (hex)
 UI_CORES = {
     "aula": "#008542",      # verde IFTO
     "evento": "#F2AF00",    # amarelo
@@ -33,12 +32,11 @@ UI_CORES = {
     "reunião": "#006666",   # verde petróleo
 }
 
-# Cores para o PDF (RGB)
 PDF_CORES = {
-    "aula": (0, 133, 66),        # verde IFTO
-    "evento": (242, 175, 0),     # amarelo
-    "feriado": (214, 40, 40),    # vermelho
-    "reunião": (0, 102, 102),    # verde petróleo
+    "aula": (0, 133, 66),
+    "evento": (242, 175, 0),
+    "feriado": (214, 40, 40),
+    "reunião": (0, 102, 102),
 }
 
 PRIORIDADE = ["feriado", "reunião", "evento", "aula"]
@@ -49,6 +47,25 @@ PRIORIDADE = ["feriado", "reunião", "evento", "aula"]
 @st.cache_resource
 def get_connection():
     conn = sqlite3.connect("calendario.db", check_same_thread=False)
+
+    # Tabela de calendários
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS calendarios (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome_calendario TEXT UNIQUE NOT NULL,
+            descricao TEXT
+        )
+    """)
+    conn.commit()
+
+    # Calendário padrão
+    cur_cal = conn.execute("SELECT * FROM calendarios")
+    if cur_cal.fetchone() is None:
+        conn.execute(
+            "INSERT INTO calendarios (nome_calendario, descricao) VALUES (?, ?)",
+            ("Calendário Geral", "Calendário padrão inicial")
+        )
+        conn.commit()
 
     # Tabela de eventos
     conn.execute("""
@@ -62,10 +79,16 @@ def get_connection():
     """)
     conn.commit()
 
-
-    # Garantir coluna 'fim'
+    # Coluna fim
     try:
         conn.execute("ALTER TABLE eventos ADD COLUMN fim TEXT;")
+        conn.commit()
+    except Exception:
+        pass
+
+    # Coluna id_calendario
+    try:
+        conn.execute("ALTER TABLE eventos ADD COLUMN id_calendario INTEGER;")
         conn.commit()
     except Exception:
         pass
@@ -81,17 +104,6 @@ def get_connection():
     """)
     conn.commit()
 
-    # Tabela de semestres acadêmicos
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS semestres (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nome_semestre TEXT UNIQUE NOT NULL,
-            data_inicio TEXT NOT NULL,
-            data_fim TEXT NOT NULL
-        )
-    """)
-    conn.commit()
-
     # Usuário admin padrão
     cursor = conn.execute("SELECT * FROM usuarios WHERE username = 'admin'")
     if cursor.fetchone() is None:
@@ -101,6 +113,19 @@ def get_connection():
             ("admin", senha_hash, "admin")
         )
         conn.commit()
+
+    # Tabela de semestres (ligados ao calendário)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS semestres (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id_calendario INTEGER NOT NULL,
+            nome_semestre TEXT NOT NULL,
+            data_inicio TEXT NOT NULL,
+            data_fim TEXT NOT NULL,
+            UNIQUE (id_calendario, nome_semestre)
+        )
+    """)
+    conn.commit()
 
     return conn
 
@@ -129,13 +154,83 @@ def criar_usuario(username, senha, perfil):
     conn.commit()
 
 # ======================================
-# FUNÇÕES PARA SEMESTRES ACADÊMICOS
+# FUNÇÕES DE CALENDÁRIOS
 # ======================================
-def carregar_semestres():
+def carregar_calendarios():
     return pd.read_sql_query(
-        "SELECT * FROM semestres ORDER BY nome_semestre",
+        "SELECT * FROM calendarios ORDER BY nome_calendario",
         conn
     )
+
+def inserir_calendario(nome, descricao):
+    conn.execute(
+        "INSERT INTO calendarios (nome_calendario, descricao) VALUES (?, ?)",
+        (nome, descricao)
+    )
+    conn.commit()
+
+def atualizar_calendario(id_cal, nome, descricao):
+    conn.execute(
+        "UPDATE calendarios SET nome_calendario = ?, descricao = ? WHERE id = ?",
+        (nome, descricao, id_cal)
+    )
+    conn.commit()
+
+def excluir_calendario(id_cal):
+    # Apagar eventos e semestres ligados ao calendário
+    conn.execute("DELETE FROM eventos WHERE id_calendario = ?", (id_cal,))
+    conn.execute("DELETE FROM semestres WHERE id_calendario = ?", (id_cal,))
+    conn.execute("DELETE FROM calendarios WHERE id = ?", (id_cal,))
+    conn.commit()
+
+# ======================================
+# FUNÇÕES PARA SEMESTRES ACADÊMICOS
+# ======================================
+def carregar_semestres_por_calendario(id_calendario: int):
+    return pd.read_sql_query(
+        "SELECT * FROM semestres WHERE id_calendario = ? ORDER BY data_inicio",
+        conn,
+        params=(id_calendario,)
+    )
+
+# ======================================
+# FUNÇÕES DE EVENTOS
+# ======================================
+def carregar_eventos():
+    df = pd.read_sql_query("SELECT * FROM eventos ORDER BY date(data)", conn)
+    if df.empty:
+        return df
+
+    if "fim" not in df.columns:
+        df["fim"] = df["data"]
+    df["fim"] = df["fim"].fillna(df["data"])
+
+    df["data"] = pd.to_datetime(df["data"])
+    df["fim"] = pd.to_datetime(df["fim"])
+    return df
+
+def inserir_evento(data_inicio, tipo, titulo, descricao, data_fim, id_calendario):
+    if data_fim is None:
+        data_fim = data_inicio
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO eventos (data, tipo, titulo, descricao, fim, id_calendario) VALUES (?, ?, ?, ?, ?, ?)",
+        (str(data_inicio), tipo, titulo, descricao, str(data_fim), id_calendario)
+    )
+    conn.commit()
+
+def atualizar_evento(id_evento, data_inicio, tipo, titulo, descricao, data_fim):
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE eventos SET data = ?, tipo = ?, titulo = ?, descricao = ?, fim = ? WHERE id = ?",
+        (str(data_inicio), tipo, titulo, descricao, str(data_fim), id_evento)
+    )
+    conn.commit()
+
+def excluir_evento(id_evento):
+    cur = conn.cursor()
+    cur.execute("DELETE FROM eventos WHERE id = ?", (id_evento,))
+    conn.commit()
 
 # ======================================
 # CONTROLE DE SESSÃO / LOGIN
@@ -173,9 +268,12 @@ if st.sidebar.button("Sair"):
     st.rerun()
 
 # ======================================
-# GERENCIAMENTO DE USUÁRIOS E SEMESTRES (ADMIN)
+# GERENCIAMENTO DE USUÁRIOS E CALENDÁRIOS (ADMIN)
 # ======================================
+df_calendarios = carregar_calendarios()
+
 if st.session_state.perfil == "admin":
+    # ---- USUÁRIOS ----
     st.sidebar.markdown("### 👥 Gerenciar usuários")
     with st.sidebar.expander("Criar novo usuário"):
         novo_user = st.text_input("Novo usuário", key="novo_user")
@@ -192,40 +290,149 @@ if st.session_state.perfil == "admin":
                 except sqlite3.IntegrityError:
                     st.sidebar.error("Usuário já existe.")
 
-    st.sidebar.markdown("### 📚 Semestres Acadêmicos")
+    # ---- CALENDÁRIOS ----
+    st.sidebar.markdown("### 🗂 Calendários")
 
-    df_sem = carregar_semestres()
+    with st.sidebar.expander("➕ Criar calendário"):
+        nome_cal = st.text_input("Nome do calendário (ex: Graduação 2026)", key="cal_nome")
+        desc_cal = st.text_area("Descrição", key="cal_desc")
+        if st.button("Salvar calendário", key="btn_add_cal"):
+            if nome_cal.strip() == "":
+                st.sidebar.error("Informe um nome para o calendário.")
+            else:
+                try:
+                    inserir_calendario(nome_cal, desc_cal)
+                    st.sidebar.success("Calendário criado!")
+                    st.rerun()
+                except sqlite3.IntegrityError:
+                    st.sidebar.error("Já existe um calendário com esse nome.")
 
-    # --- ADICIONAR SEMESTRE ---
+    with st.sidebar.expander("✏️ Editar / Excluir calendário"):
+        df_calendarios = carregar_calendarios()
+        if df_calendarios.empty:
+            st.sidebar.info("Nenhum calendário cadastrado.")
+        else:
+            sel_cal_nome = st.selectbox(
+                "Escolha o calendário",
+                df_calendarios["nome_calendario"].tolist(),
+                key="cal_edit_sel"
+            )
+            row_cal = df_calendarios[df_calendarios["nome_calendario"] == sel_cal_nome].iloc[0]
+            cal_id_sel = int(row_cal["id"])
+
+            novo_nome_cal = st.text_input(
+                "Nome",
+                row_cal["nome_calendario"],
+                key="cal_edit_nome"
+            )
+            nova_desc_cal = st.text_area(
+                "Descrição",
+                row_cal["descricao"] or "",
+                key="cal_edit_desc"
+            )
+
+            if st.button("Salvar alterações", key="btn_salvar_cal"):
+                atualizar_calendario(cal_id_sel, novo_nome_cal, nova_desc_cal)
+                st.sidebar.success("Calendário atualizado!")
+                st.rerun()
+
+            if st.button("Excluir calendário", key="btn_excluir_cal"):
+                excluir_calendario(cal_id_sel)
+                st.sidebar.success("Calendário excluído (eventos e semestres associados também foram apagados).")
+                st.rerun()
+else:
+    st.sidebar.markdown("### 🗂 Calendários")
+    st.sidebar.info("Apenas administradores podem gerenciar calendários.")
+
+# ======================================
+# SELEÇÃO DE CALENDÁRIO E SEMESTRE (VISUALIZAÇÃO)
+# ======================================
+st.markdown("## 🗂 Seleção de Calendário e Semestre")
+
+df_calendarios = carregar_calendarios()
+
+if df_calendarios.empty:
+    st.error("Nenhum calendário cadastrado. Crie pelo menos um na barra lateral (admin).")
+    st.stop()
+
+# Selecionar calendário para visualização
+nome_cal_visual = st.selectbox(
+    "Selecione o calendário",
+    df_calendarios["nome_calendario"].tolist()
+)
+
+row_cal_visual = df_calendarios[df_calendarios["nome_calendario"] == nome_cal_visual].iloc[0]
+id_cal_visual = int(row_cal_visual["id"])
+
+st.caption(row_cal_visual["descricao"] or "")
+
+# Carregar semestres desse calendário
+df_semestres_cal = carregar_semestres_por_calendario(id_cal_visual)
+
+inicio_sem = None
+fim_sem = None
+semestre_atual = None
+
+if df_semestres_cal.empty:
+    st.warning("Nenhum semestre cadastrado para este calendário. Cadastre semestres na barra lateral (admin).")
+else:
+    semestre_atual = st.selectbox(
+        "Selecione o semestre acadêmico",
+        df_semestres_cal["nome_semestre"].tolist()
+    )
+    dados_sem = df_semestres_cal[df_semestres_cal["nome_semestre"] == semestre_atual].iloc[0]
+    inicio_sem = pd.to_datetime(dados_sem["data_inicio"]).date()
+    fim_sem = pd.to_datetime(dados_sem["data_fim"]).date()
+
+    st.info(
+        f"📘 Período do semestre **{semestre_atual}** no calendário **{nome_cal_visual}**: "
+        f"{inicio_sem.strftime('%d/%m/%Y')} a {fim_sem.strftime('%d/%m/%Y')}"
+    )
+    st.caption("Dashboard, calendário e PDF serão filtrados por este calendário e semestre.")
+
+# ======================================
+# GERENCIAMENTO DE SEMESTRES (ADMIN – POR CALENDÁRIO)
+# ======================================
+if st.session_state.perfil == "admin":
+    st.sidebar.markdown("### 📚 Semestres do calendário selecionado")
+
+    df_sem_atual = carregar_semestres_por_calendario(id_cal_visual)
+
+    # Adicionar semestre
     with st.sidebar.expander("➕ Adicionar semestre"):
-        novo_nome = st.text_input("Nome do semestre (ex: 2025/1)", key="sem_nome")
+        novo_nome_sem = st.text_input("Nome do semestre (ex: 2026/1)", key="sem_nome")
         novo_ini = st.date_input("Data de início", key="sem_ini")
         novo_fim = st.date_input("Data de fim", key="sem_fim")
 
         if st.button("Salvar semestre", key="btn_add_sem"):
-            if novo_nome.strip() == "":
+            if novo_nome_sem.strip() == "":
                 st.sidebar.error("Informe um nome para o semestre.")
             elif novo_ini > novo_fim:
                 st.sidebar.error("Data de início não pode ser maior que a data de fim.")
             else:
                 try:
                     conn.execute(
-                        "INSERT INTO semestres (nome_semestre, data_inicio, data_fim) VALUES (?, ?, ?)",
-                        (novo_nome, novo_ini.isoformat(), novo_fim.isoformat())
+                        "INSERT INTO semestres (id_calendario, nome_semestre, data_inicio, data_fim) VALUES (?, ?, ?, ?)",
+                        (id_cal_visual, novo_nome_sem, novo_ini.isoformat(), novo_fim.isoformat())
                     )
                     conn.commit()
                     st.sidebar.success("Semestre adicionado!")
                     st.rerun()
                 except sqlite3.IntegrityError:
-                    st.sidebar.error("Este semestre já existe.")
+                    st.sidebar.error("Já existe um semestre com esse nome neste calendário.")
 
-    # --- EDITAR SEMESTRE ---
-    with st.sidebar.expander("✏️ Editar semestre"):
-        if df_sem.empty:
-            st.sidebar.info("Nenhum semestre cadastrado.")
+    # Editar / excluir semestre
+    with st.sidebar.expander("✏️ Editar / Excluir semestre"):
+        df_sem_atual = carregar_semestres_por_calendario(id_cal_visual)
+        if df_sem_atual.empty:
+            st.sidebar.info("Nenhum semestre cadastrado para este calendário.")
         else:
-            sem_escolhido = st.selectbox("Escolha o semestre", df_sem["nome_semestre"], key="edit_sem")
-            row_sem = df_sem[df_sem["nome_semestre"] == sem_escolhido].iloc[0]
+            sem_escolhido = st.selectbox(
+                "Escolha o semestre",
+                df_sem_atual["nome_semestre"].tolist(),
+                key="edit_sem"
+            )
+            row_sem = df_sem_atual[df_sem_atual["nome_semestre"] == sem_escolhido].iloc[0]
 
             novo_ini_ed = st.date_input(
                 "Novo início",
@@ -243,96 +450,21 @@ if st.session_state.perfil == "admin":
                     st.sidebar.error("Data inicial não pode ser maior que a final.")
                 else:
                     conn.execute(
-                        "UPDATE semestres SET data_inicio=?, data_fim=? WHERE nome_semestre=?",
-                        (novo_ini_ed.isoformat(), novo_fim_ed.isoformat(), sem_escolhido)
+                        "UPDATE semestres SET data_inicio=?, data_fim=? WHERE id=?",
+                        (novo_ini_ed.isoformat(), novo_fim_ed.isoformat(), int(row_sem["id"]))
                     )
                     conn.commit()
                     st.sidebar.success("Semestre atualizado!")
                     st.rerun()
 
-    # --- EXCLUIR SEMESTRE ---
-    with st.sidebar.expander("🗑️ Excluir semestre"):
-        if df_sem.empty:
-            st.sidebar.info("Nenhum semestre para excluir.")
-        else:
-            sem_excluir = st.selectbox("Selecione", df_sem["nome_semestre"], key="del_sem")
-
             if st.button("Excluir semestre", key="btn_del_sem"):
-                conn.execute("DELETE FROM semestres WHERE nome_semestre=?", (sem_excluir,))
+                conn.execute("DELETE FROM semestres WHERE id = ?", (int(row_sem["id"]),))
                 conn.commit()
                 st.sidebar.success("Semestre excluído!")
                 st.rerun()
-
 else:
-    st.sidebar.markdown("### 📚 Semestres Acadêmicos")
+    st.sidebar.markdown("### 📚 Semestres")
     st.sidebar.info("Apenas administradores podem gerenciar semestres.")
-
-# ======================================
-# FUNÇÕES DE EVENTOS
-# ======================================
-def carregar_eventos():
-    df = pd.read_sql_query("SELECT * FROM eventos ORDER BY date(data)", conn)
-    if df.empty:
-        return df
-
-    if "fim" not in df.columns:
-        df["fim"] = df["data"]
-    df["fim"] = df["fim"].fillna(df["data"])
-
-    df["data"] = pd.to_datetime(df["data"])
-    df["fim"] = pd.to_datetime(df["fim"])
-    return df
-
-def inserir_evento(data_inicio, tipo, titulo, descricao, data_fim=None):
-    if data_fim is None:
-        data_fim = data_inicio
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO eventos (data, tipo, titulo, descricao, fim) VALUES (?, ?, ?, ?, ?)",
-        (str(data_inicio), tipo, titulo, descricao, str(data_fim))
-    )
-    conn.commit()
-
-def atualizar_evento(id_evento, data_inicio, tipo, titulo, descricao, data_fim):
-    cur = conn.cursor()
-    cur.execute(
-        "UPDATE eventos SET data = ?, tipo = ?, titulo = ?, descricao = ?, fim = ? WHERE id = ?",
-        (str(data_inicio), tipo, titulo, descricao, str(data_fim), id_evento)
-    )
-    conn.commit()
-
-def excluir_evento(id_evento):
-    cur = conn.cursor()
-    cur.execute("DELETE FROM eventos WHERE id = ?", (id_evento,))
-    conn.commit()
-
-# ======================================
-# SELEÇÃO DE SEMESTRE ACADÊMICO (VISUALIZAÇÃO)
-# ======================================
-st.markdown("## 🎓 Seleção de Semestre Acadêmico")
-
-df_semestres = carregar_semestres()
-inicio_sem = None
-fim_sem = None
-semestre_atual = None
-
-if df_semestres.empty:
-    st.warning("Nenhum semestre cadastrado. Cadastre na barra lateral (admin).")
-else:
-    semestre_atual = st.selectbox(
-        "Selecione o semestre acadêmico",
-        df_semestres["nome_semestre"].tolist()
-    )
-
-    dados_sem = df_semestres[df_semestres["nome_semestre"] == semestre_atual].iloc[0]
-    inicio_sem = pd.to_datetime(dados_sem["data_inicio"]).date()
-    fim_sem = pd.to_datetime(dados_sem["data_fim"]).date()
-
-    st.info(
-        f"📘 Período do semestre **{semestre_atual}**: "
-        f"{inicio_sem.strftime('%d/%m/%Y')} a {fim_sem.strftime('%d/%m/%Y')}"
-    )
-    st.caption("A visualização (dashboard, calendário e PDF) será filtrada por este intervalo. O cadastro de eventos pode usar qualquer data.")
 
 # ======================================
 # SIDEBAR – CRUD EVENTOS (somente admin/editor)
@@ -351,6 +483,7 @@ if st.session_state.perfil in ["admin", "editor"]:
     # ---------- ADICIONAR ----------
     if operacao == "Adicionar":
         st.sidebar.markdown("### ➕ Adicionar evento (com período)")
+        st.sidebar.caption(f"Calendário ativo: {nome_cal_visual}")
 
         data_inicio = st.sidebar.date_input("Data de início", value=date.today())
         data_fim = st.sidebar.date_input("Data de fim", value=date.today())
@@ -367,23 +500,25 @@ if st.session_state.perfil in ["admin", "editor"]:
             elif titulo_new.strip() == "":
                 st.sidebar.error("Informe um título válido.")
             else:
-                inserir_evento(data_inicio, tipo_new, titulo_new, descricao_new, data_fim)
+                inserir_evento(data_inicio, tipo_new, titulo_new, descricao_new, data_fim, id_cal_visual)
                 st.sidebar.success("Evento salvo com sucesso!")
                 st.rerun()
 
     # ---------- EDITAR ----------
     elif operacao == "Editar":
         st.sidebar.markdown("### ✏️ Editar evento")
-        if df_eventos_all.empty:
-            st.sidebar.info("Nenhum evento cadastrado.")
+        df_evt_cal = df_eventos_all[df_eventos_all["id_calendario"] == id_cal_visual]
+
+        if df_evt_cal.empty:
+            st.sidebar.info("Nenhum evento cadastrado para este calendário.")
         else:
-            df_eventos_all["label"] = df_eventos_all.apply(
+            df_evt_cal["label"] = df_evt_cal.apply(
                 lambda r: f"{r['id']} - {r['data'].strftime('%d/%m/%Y')} a {r['fim'].strftime('%d/%m/%Y')} - {r['titulo']}",
                 axis=1
             )
-            escolhido = st.sidebar.selectbox("Selecione o evento", df_eventos_all["label"])
+            escolhido = st.sidebar.selectbox("Selecione o evento", df_evt_cal["label"])
             id_escolhido = int(escolhido.split(" - ")[0])
-            row_evt = df_eventos_all[df_eventos_all["id"] == id_escolhido].iloc[0]
+            row_evt = df_evt_cal[df_evt_cal["id"] == id_escolhido].iloc[0]
 
             with st.sidebar.form("form_editar"):
                 data_edit_inicio = st.date_input("Data de início", row_evt["data"].date())
@@ -418,15 +553,16 @@ if st.session_state.perfil in ["admin", "editor"]:
     # ---------- EXCLUIR ----------
     elif operacao == "Excluir":
         st.sidebar.markdown("### 🗑️ Excluir evento")
+        df_evt_cal = df_eventos_all[df_eventos_all["id_calendario"] == id_cal_visual]
 
-        if df_eventos_all.empty:
-            st.sidebar.info("Nenhum evento cadastrado.")
+        if df_evt_cal.empty:
+            st.sidebar.info("Nenhum evento cadastrado para este calendário.")
         else:
-            df_eventos_all["label"] = df_eventos_all.apply(
+            df_evt_cal["label"] = df_evt_cal.apply(
                 lambda r: f"{r['id']} - {r['data'].strftime('%d/%m/%Y')} a {r['fim'].strftime('%d/%m/%Y')} - {r['titulo']}",
                 axis=1
             )
-            escolhido = st.sidebar.selectbox("Selecione o evento", df_eventos_all["label"])
+            escolhido = st.sidebar.selectbox("Selecione o evento", df_evt_cal["label"])
             id_escolhido = int(escolhido.split(" - ")[0])
 
             if st.sidebar.button("Excluir definitivamente"):
@@ -437,11 +573,12 @@ else:
     st.sidebar.warning("Você possui permissão apenas para visualizar o calendário e o dashboard.")
 
 # ======================================
-# DASHBOARD (FILTRADO PELO SEMESTRE, SE HOUVER)
+# DASHBOARD (FILTRADO POR CALENDÁRIO + SEMESTRE)
 # ======================================
 st.markdown("## 📊 Dashboard")
 
 df_eventos = carregar_eventos()
+df_eventos = df_eventos[df_eventos["id_calendario"] == id_cal_visual]
 
 if inicio_sem and fim_sem:
     df_eventos_sem = df_eventos[
@@ -452,7 +589,7 @@ else:
     df_eventos_sem = df_eventos.copy()
 
 if df_eventos_sem.empty:
-    st.info("Nenhum evento cadastrado para o semestre selecionado.")
+    st.info("Nenhum evento cadastrado para este calendário/semestre.")
 else:
     col1, col2, col3 = st.columns(3)
 
@@ -468,7 +605,7 @@ else:
     st.markdown("### Eventos por mês (data de início)")
     st.line_chart(df_eventos_sem.groupby("mes")["id"].count())
 
-    st.markdown("### Tabela de eventos do semestre")
+    st.markdown("### Tabela de eventos")
     df_show = df_eventos_sem[["id", "data", "fim", "tipo", "titulo", "descricao"]].copy()
     df_show["data"] = df_show["data"].dt.strftime("%d/%m/%Y")
     df_show["fim"] = df_show["fim"].dt.strftime("%d/%m/%Y")
@@ -478,6 +615,7 @@ else:
 # EVENTOS PARA O CALENDÁRIO (FILTRADO)
 # ======================================
 df_eventos_cal = carregar_eventos()
+df_eventos_cal = df_eventos_cal[df_eventos_cal["id_calendario"] == id_cal_visual]
 
 if inicio_sem and fim_sem:
     df_eventos_cal = df_eventos_cal[
@@ -489,8 +627,6 @@ eventos_global = []
 if not df_eventos_cal.empty:
     for _, row in df_eventos_cal.iterrows():
         cor_hex = UI_CORES.get(row["tipo"], "#555555")
-
-        # 'fim' inclusivo no banco → exclusivo no calendário (+1 dia)
         end_exclusive = (row["fim"] + timedelta(days=1)).strftime("%Y-%m-%d")
 
         eventos_global.append({
@@ -501,14 +637,13 @@ if not df_eventos_cal.empty:
             "color": cor_hex
         })
 
-# Ano base para título do calendário
 if not df_eventos_cal.empty:
     ano_base = int(df_eventos_cal["data"].dt.year.mode()[0])
 else:
     ano_base = date.today().year
 
 # ======================================
-# CALENDÁRIO ANUAL – 12 MESES (VISUAL)
+# CALENDÁRIO ANUAL – 12 MESES
 # ======================================
 st.markdown("## 🗓️ Visualização em calendário – 12 meses")
 
@@ -562,7 +697,7 @@ for linha in range(0, 12, 3):
                     elif titulo.strip() == "":
                         st.error("Informe um título válido.")
                     else:
-                        inserir_evento(data_inicio_click, tipo, titulo, descricao, data_fim_click)
+                        inserir_evento(data_inicio_click, tipo, titulo, descricao, data_fim_click, id_cal_visual)
                         st.success("Evento cadastrado!")
                         st.rerun()
 
@@ -606,7 +741,7 @@ for linha in range(0, 12, 3):
                     elif titulo.strip() == "":
                         st.error("Informe um título válido.")
                     else:
-                        inserir_evento(data_inicio_click, tipo, titulo, descricao, data_fim_click)
+                        inserir_evento(data_inicio_click, tipo, titulo, descricao, data_fim_click, id_cal_visual)
                         st.success("Evento cadastrado!")
                         st.rerun()
 
@@ -650,18 +785,18 @@ for linha in range(0, 12, 3):
                     elif titulo.strip() == "":
                         st.error("Informe um título válido.")
                     else:
-                        inserir_evento(data_inicio_click, tipo, titulo, descricao, data_fim_click)
+                        inserir_evento(data_inicio_click, tipo, titulo, descricao, data_fim_click, id_cal_visual)
                         st.success("Evento cadastrado!")
                         st.rerun()
 
 # ======================================
-# EXPORTAÇÃO PARA PDF – CALENDÁRIO COMPLETO (SEMESTRE)
+# EXPORTAÇÃO PARA PDF – POR CALENDÁRIO + SEMESTRE
 # ======================================
 st.markdown("## 📄 Exportar calendário para PDF")
 
 def gerar_pdf(df, titulo_extra=None):
-    # Determinar ano base
     if df.empty:
+        # Ano base padrão
         ano_base = date.today().year
     else:
         ano_base = int(df["data"].dt.year.mode()[0])
@@ -686,9 +821,8 @@ def gerar_pdf(df, titulo_extra=None):
         (10, 11, 12)
     ]
 
-    # Eventos por dia (para colorir períodos)
+    # Eventos por dia
     eventos_por_dia = {}
-
     for _, row in df.iterrows():
         inicio = row["data"].date()
         fim = row["fim"].date()
@@ -724,7 +858,6 @@ def gerar_pdf(df, titulo_extra=None):
 
                 if dia > 0:
                     data_atual = date(ano, mes, dia)
-
                     cor = None
                     for tipo in PRIORIDADE:
                         if data_atual in eventos_mes[tipo]:
@@ -741,7 +874,6 @@ def gerar_pdf(df, titulo_extra=None):
                     pdf.set_xy(cx + 1, cy + 1)
                     pdf.cell(cell_w - 2, 4, txt=str(dia))
 
-    # Montando páginas
     for idx_trim, trio in enumerate(trimestres, start=1):
         pdf.add_page()
         margin_x = 10
@@ -765,7 +897,7 @@ def gerar_pdf(df, titulo_extra=None):
         largura_mes = (largura_util - 2 * gap_x) / 3
         altura_mes = 80
 
-        # Desenhar 3 meses
+        # Construir eventos por tipo para o trimestre
         for i, mes in enumerate(trio):
             eventos_mes = {tp: set() for tp in PRIORIDADE}
 
@@ -778,7 +910,6 @@ def gerar_pdf(df, titulo_extra=None):
 
             x = margin_x + i * (largura_mes + gap_x)
             y = topo_cal
-
             desenhar_mes_colorido(pdf, ano_base, mes, x, y, largura_mes, altura_mes, eventos_mes)
 
         # Lista de eventos do trimestre
@@ -787,7 +918,6 @@ def gerar_pdf(df, titulo_extra=None):
         pdf.cell(0, 6, txt="Eventos do trimestre (ordenados por data):", ln=True)
 
         pdf.set_font("DejaVu", size=9)
-
         df_trim = df[df["data"].dt.month.isin(trio)].sort_values("data")
 
         if df_trim.empty:
@@ -797,11 +927,7 @@ def gerar_pdf(df, titulo_extra=None):
             for _, row in df_trim.iterrows():
                 ini = row["data"].strftime("%d/%m/%Y")
                 fim = row["fim"].strftime("%d/%m/%Y")
-                if ini == fim:
-                    periodo = ini
-                else:
-                    periodo = f"{ini} a {fim}"
-
+                periodo = ini if ini == fim else f"{ini} a {fim}"
                 linha = f"• {periodo} – {row['tipo']} – {row['titulo']}"
                 pdf.set_x(margin_x)
                 pdf.multi_cell(pdf.w - 2 * margin_x, 5, txt=linha)
@@ -810,8 +936,10 @@ def gerar_pdf(df, titulo_extra=None):
     pdf.output(caminho)
     return caminho
 
-# Preparar dados para exportação
+# Dados filtrados pra exportação
 df_export = carregar_eventos()
+df_export = df_export[df_export["id_calendario"] == id_cal_visual]
+
 if inicio_sem and fim_sem:
     df_export = df_export[
         (df_export["data"].dt.date <= fim_sem) &
@@ -820,19 +948,17 @@ if inicio_sem and fim_sem:
 
 if df_export.empty:
     st.warning(
-        "⚠️ Não há eventos cadastrados para o semestre selecionado. "
+        "⚠️ Não há eventos cadastrados para este calendário/semestre. "
         "O PDF será gerado apenas com o calendário em branco."
     )
 
-gerar = st.button("📄 Gerar PDF do calendário do semestre")
-
-if gerar:
-    titulo_extra = semestre_atual if semestre_atual else None
+if st.button("📄 Gerar PDF do calendário do semestre"):
+    titulo_extra = f"{nome_cal_visual} – {semestre_atual}" if semestre_atual else nome_cal_visual
     caminho = gerar_pdf(df_export, titulo_extra=titulo_extra)
     with open(caminho, "rb") as f:
         st.download_button(
             label="⬇️ Baixar arquivo PDF",
             data=f,
-            file_name=f"calendario_IFTO_{semestre_atual or 'ano'}.pdf",
+            file_name=f"calendario_IFTO_{nome_cal_visual}_{semestre_atual or 'ano'}.pdf".replace(" ", "_"),
             mime="application/pdf"
         )
