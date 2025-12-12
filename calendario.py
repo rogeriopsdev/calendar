@@ -664,17 +664,39 @@ else:
 # ======================================
 # EVENTOS PARA O CALENDÁRIO (FILTRADO)
 # ======================================
-df_eventos_cal = carregar_eventos()
-if not df_eventos_cal.empty and "id_calendario" in df_eventos_cal.columns:
-    df_eventos_cal = df_eventos_cal[df_eventos_cal["id_calendario"] == id_cal_visual]
-else:
-    df_eventos_cal = df_eventos_cal.iloc[0:0].copy()
+df_eventos_cal = carregar_eventos().copy()
 
-if inicio_sem and fim_sem and not df_eventos_cal.empty:
+# Filtra pelo calendário selecionado
+df_eventos_cal = df_eventos_cal[df_eventos_cal["id_calendario"] == id_cal_visual]
+
+# Corrige possíveis espaços e inconsistências em tipos
+df_eventos_cal["tipo"] = df_eventos_cal["tipo"].str.strip().str.lower()
+
+# Filtra pelo semestre apenas se existir semestre ativo
+if inicio_sem and fim_sem:
     df_eventos_cal = df_eventos_cal[
-        (df_eventos_cal["data"].dt.date <= fim_sem) &
-        (df_eventos_cal["fim"].dt.date >= inicio_sem)
+        (df_eventos_cal["fim"].dt.date >= inicio_sem) &
+        (df_eventos_cal["data"].dt.date <= fim_sem)
     ]
+
+# Caso vazio, evita erro e continua
+if df_eventos_cal.empty:
+    eventos_global = []
+else:
+    eventos_global = []
+    for _, row in df_eventos_cal.iterrows():
+        cor_hex = UI_CORES.get(row["tipo"], "#555555")
+
+        end_exclusive = (row["fim"] + timedelta(days=1)).strftime("%Y-%m-%d")
+
+        eventos_global.append({
+            "title": f"{row['titulo']}",
+            "start": row["data"].strftime("%Y-%m-%d"),
+            "end": end_exclusive,
+            "description": row["descricao"] or "",
+            "color": cor_hex
+        })
+
 
 eventos_global = []
 if not df_eventos_cal.empty:
