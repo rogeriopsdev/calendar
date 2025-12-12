@@ -216,7 +216,7 @@ def carregar_eventos():
     if df.empty:
         return df
 
-    # Garante que a coluna fim existe
+    # Garante que a coluna fim exista
     if "fim" not in df.columns:
         df["fim"] = df["data"]
 
@@ -228,6 +228,9 @@ def carregar_eventos():
     hoje = pd.to_datetime(date.today())
     df["data"] = df["data"].fillna(hoje)
     df["fim"] = df["fim"].fillna(df["data"])
+
+    # Garante que tipo esteja em minúsculo e sem espaços
+    df["tipo"] = df["tipo"].astype(str).str.strip().str.lower()
 
     return df
 
@@ -388,13 +391,16 @@ if df_calendarios.empty:
     st.error("Nenhum calendário cadastrado. Crie pelo menos um na barra lateral (admin).")
     st.stop()
 
-# Mostrar calendários agrupando por nível (só visual)
 st.caption("Você pode manter vários calendários por nível de ensino, por exemplo: Graduação 2026, Pós-graduação 2026, Cursos Técnicos 2026...")
 
-# Selecionar calendário para visualização
+# Selecionar calendário para visualização (mostrando nível no label)
+opcoes_cal = [
+    f"{row['nome_calendario']} ({row['nivel_ensino'] or 'Geral'})"
+    for _, row in df_calendarios.iterrows()
+]
 nome_cal_visual = st.selectbox(
     "Selecione o calendário",
-    [f"{row['nome_calendario']} ({row['nivel_ensino'] or 'Geral'})" for _, row in df_calendarios.iterrows()]
+    opcoes_cal
 )
 
 # Recuperar nome puro e linha do calendário
@@ -548,7 +554,12 @@ if st.session_state.perfil in ["admin", "editor"]:
     # ---------- EDITAR ----------
     elif operacao == "Editar":
         st.sidebar.markdown("### ✏️ Editar evento")
-        df_evt_cal = df_eventos_all[df_eventos_all["id_calendario"] == id_cal_visual]
+        df_evt_cal = df_eventos_all.copy()
+
+        if "id_calendario" in df_evt_cal.columns:
+            df_evt_cal = df_evt_cal[df_evt_cal["id_calendario"] == id_cal_visual]
+        else:
+            df_evt_cal = df_evt_cal.iloc[0:0].copy()
 
         if df_evt_cal.empty:
             st.sidebar.info("Nenhum evento cadastrado para este calendário.")
@@ -597,7 +608,11 @@ if st.session_state.perfil in ["admin", "editor"]:
     # ---------- EXCLUIR ----------
     elif operacao == "Excluir":
         st.sidebar.markdown("### 🗑️ Excluir evento")
-        df_evt_cal = df_eventos_all[df_eventos_all["id_calendario"] == id_cal_visual]
+        df_evt_cal = df_eventos_all.copy()
+        if "id_calendario" in df_evt_cal.columns:
+            df_evt_cal = df_evt_cal[df_evt_cal["id_calendario"] == id_cal_visual]
+        else:
+            df_evt_cal = df_evt_cal.iloc[0:0].copy()
 
         if df_evt_cal.empty:
             st.sidebar.info("Nenhum evento cadastrado para este calendário.")
@@ -667,41 +682,24 @@ else:
 df_eventos_cal = carregar_eventos().copy()
 
 # Filtra pelo calendário selecionado
-df_eventos_cal = df_eventos_cal[df_eventos_cal["id_calendario"] == id_cal_visual]
-
-# Corrige possíveis espaços e inconsistências em tipos
-df_eventos_cal["tipo"] = df_eventos_cal["tipo"].str.strip().str.lower()
+if not df_eventos_cal.empty and "id_calendario" in df_eventos_cal.columns:
+    df_eventos_cal = df_eventos_cal[df_eventos_cal["id_calendario"] == id_cal_visual]
+else:
+    df_eventos_cal = df_eventos_cal.iloc[0:0].copy()
 
 # Filtra pelo semestre apenas se existir semestre ativo
-if inicio_sem and fim_sem:
+if inicio_sem and fim_sem and not df_eventos_cal.empty:
     df_eventos_cal = df_eventos_cal[
         (df_eventos_cal["fim"].dt.date >= inicio_sem) &
         (df_eventos_cal["data"].dt.date <= fim_sem)
     ]
 
-# Caso vazio, evita erro e continua
-if df_eventos_cal.empty:
-    eventos_global = []
-else:
-    eventos_global = []
-    for _, row in df_eventos_cal.iterrows():
-        cor_hex = UI_CORES.get(row["tipo"], "#555555")
-
-        end_exclusive = (row["fim"] + timedelta(days=1)).strftime("%Y-%m-%d")
-
-        eventos_global.append({
-            "title": f"{row['titulo']}",
-            "start": row["data"].strftime("%Y-%m-%d"),
-            "end": end_exclusive,
-            "description": row["descricao"] or "",
-            "color": cor_hex
-        })
-
-
 eventos_global = []
 if not df_eventos_cal.empty:
     for _, row in df_eventos_cal.iterrows():
-        cor_hex = UI_CORES.get(row["tipo"], "#555555")
+        tipo_norm = str(row["tipo"]).strip().lower()
+        cor_hex = UI_CORES.get(tipo_norm, "#555555")
+
         end_exclusive = (row["fim"] + timedelta(days=1)).strftime("%Y-%m-%d")
 
         eventos_global.append({
