@@ -86,7 +86,32 @@ def get_connection():
             descricao TEXT
         )
     """)
+    # ---- Tabela de eventos ----
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS eventos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            data TEXT NOT NULL,
+            tipo TEXT NOT NULL,
+            titulo TEXT NOT NULL,
+            descricao TEXT
+        )
+    """)
     conn.commit()
+
+    # ---------- MIGRAÇÕES SEGURAS ----------
+    def coluna_existe(tabela, coluna):
+        info = conn.execute(f"PRAGMA table_info({tabela})").fetchall()
+        return coluna in [col[1] for col in info]
+
+    if not coluna_existe("eventos", "fim"):
+        conn.execute("ALTER TABLE eventos ADD COLUMN fim TEXT;")
+        conn.commit()
+
+    if not coluna_existe("eventos", "id_calendario"):
+        conn.execute("ALTER TABLE eventos ADD COLUMN id_calendario INTEGER;")
+        conn.commit()
+
+
 
     # Coluna fim
     try:
@@ -248,12 +273,27 @@ def inserir_evento(data_inicio, tipo, titulo, descricao, data_fim, id_calendario
 
 
 def atualizar_evento(id_evento, data_inicio, tipo, titulo, descricao, data_fim):
+    if data_fim is None:
+        data_fim = data_inicio
+
     cur = conn.cursor()
     cur.execute(
-        "UPDATE eventos SET data = ?, tipo = ?, titulo = ?, descricao = ?, fim = ? WHERE id = ?",
-        (str(data_inicio), tipo, titulo, descricao, str(data_fim), id_evento)
+        """
+        UPDATE eventos 
+        SET data = ?, tipo = ?, titulo = ?, descricao = ?, fim = ?
+        WHERE id = ?
+        """,
+        (
+            str(data_inicio),
+            tipo.strip().lower(),
+            titulo,
+            descricao,
+            str(data_fim),
+            id_evento
+        )
     )
     conn.commit()
+
 
 
 def excluir_evento(id_evento):
@@ -573,7 +613,11 @@ if st.session_state.perfil in ["admin", "editor"]:
             )
             escolhido = st.sidebar.selectbox("Selecione o evento", df_evt_cal["label"])
             id_escolhido = int(escolhido.split(" - ")[0])
-            row_evt = df_evt_cal[df_evt_cal["id"] == id_escolhido].iloc[0]
+            df_sel = df_evt_cal[df_evt_cal["id"] == id_escolhido]
+            if df_sel.empty:
+                st.sidebar.error("Evento não encontrado. Atualize a página.")
+                st.stop()
+            row_evt = df_sel.iloc[0]
 
             with st.sidebar.form("form_editar"):
                 data_edit_inicio = st.date_input("Data de início", row_evt["data"].date())
