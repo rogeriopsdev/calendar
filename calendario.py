@@ -20,7 +20,6 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
-
 # ======================================
 # CORES E PRIORIDADES
 # ======================================
